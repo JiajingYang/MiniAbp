@@ -1,22 +1,25 @@
 ﻿using System;
 using System.Web;
 using MiniAbp.Authorization;
+using MiniAbp.Configuration;
+using MiniAbp.Dependency;
+using MiniAbp.Reflection;
 using MiniAbp.Web.Route;
 
 namespace MiniAbp.Web
 {
     public abstract class YApplication: HttpApplication
     {
-        protected YBootstrapper BootStraper { get; private set; }
+        protected YBootstrapper Bootstrapper { get; private set; }
         protected YApplication()
         {
-            BootStraper = new YBootstrapper();
+            Bootstrapper = new YBootstrapper();
         }
 
         protected virtual void Application_Start(object sender, EventArgs e)
         {
-            BootStraper.Initialize();
-            BootStraper.PostInitialize();
+            Bootstrapper.IocManager.RegisterIfNot<IAssemblyFinder, WebAssemblyFinder>();
+            Bootstrapper.Initialize();
         }
 
         protected virtual void Session_Start(object sender, EventArgs e)
@@ -39,18 +42,12 @@ namespace MiniAbp.Web
             {
                  PrincipalHelper.SetPrincipal(null);
             }
-            UrlRouting.Instance.HandleApiService(((System.Web.HttpApplication)sender),
-               (response, outputJson) =>
-               {
-                   response.ContentType = "application/json; charset=utf-8";
-                   response.Write(outputJson);
-                   response.End();
-               });
+            UrlRouting.Instance.HandleApiService((System.Web.HttpApplication)sender);
         }
 
         protected virtual void Application_Error(object sender, EventArgs e)
         {
-            BootStraper.HandleException(Server.GetLastError().GetBaseException());
+            Bootstrapper.HandleException(Server.GetLastError().GetBaseException());
         }
 
         protected virtual void Session_End(object sender, EventArgs e)
@@ -60,6 +57,7 @@ namespace MiniAbp.Web
 
         protected virtual void Application_End(object sender, EventArgs e)
         {
+            Bootstrapper.Dispose();
         }
     }
 }

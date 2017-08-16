@@ -1,12 +1,17 @@
-﻿using System.Data;
+﻿using System;
+using System.Collections.Generic;
+using System.Data;
+using MiniAbp.Extension;
+using MiniAbp.Localization;
 using MiniAbp.Runtime;
 
 namespace MiniAbp.Domain
 {
-    public class BaseService
+    public abstract class BaseService : ApplicationCommonBase
     {
-        protected YSession Session = YSession.GetInstance();
-        public IDbConnection DbConnection { get; set; }
-        public IDbTransaction DbTransaction { get; set; }
+        public BaseService()
+        {
+        }
+
     }
 }

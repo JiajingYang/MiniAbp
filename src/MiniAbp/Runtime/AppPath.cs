@@ -52,7 +52,7 @@ namespace MiniAbp.Runtime
         /// </summary>
         /// <param name="directory"></param>
         /// <returns></returns>
-        public static string GetDir(string directory)
+        public static string GetOrCreateDirectory(string directory)
         {
             if (!Directory.Exists(directory))
                 Directory.CreateDirectory(directory);
@@ -70,6 +70,17 @@ namespace MiniAbp.Runtime
             if (!Directory.Exists(dir))
                 Directory.CreateDirectory(dir);
             return dir;
+        }
+        /// <summary>
+        /// Get relevant directory, if not exist then create.
+        /// </summary>
+        /// <param name="path"></param>
+        /// <returns></returns>
+        public static string GetOrCreateFilePath(string path)
+        {
+            if (!File.Exists(path))
+                File.Create(path);
+            return path;
         }
     }
 }

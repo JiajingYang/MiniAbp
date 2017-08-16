@@ -1,65 +1,43 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Data.Common;
 using System.Data.SqlClient;
 using System.Linq;
 using Dapper;
+using MiniAbp.Configuration;
 using MiniAbp.DataAccess.Dapper; 
 using MiniAbp.Dependency;
 using MiniAbp.Domain.Entitys;
+using MiniAbp.Extension;
 using MiniAbp.Runtime;
 
 namespace MiniAbp.DataAccess
 {
     public class DbDapper
-    {
-        private static string _connStr;
-        public static string ConnectionString {
-            get { return _connStr; } 
-            set
-            {
-                _connStr = AppPath.ConvertFormatConnection(value);
-            }
-        } 
-        //public static DBHelper DbHelper;
-        private static Dialect _dialect;
-        public static Dialect Dialect
-        {
-            get { return _dialect; }
-            set
-            {
-                _dialect = value;
-                SimpleDapper.SetDialect(_dialect);
-            }
-        } 
-        //private static string ConnStr
-        //{
-        //    get
-        //    {
-        //        var cs = ConnectionString;
-        //        var scsb = new SqlConnectionStringBuilder(cs)
-        //        {
-        //            MultipleActiveResultSets = true
-        //        };
-        //        return scsb.ConnectionString;
-        //    }
-        //}
+    { 
+        public static string ConnectionString => AppPath.ConvertFormatConnection(IocManager.Instance.Resolve<DatabaseConfiguration>().ConnectionString);
+        public static Dialect Dialect => IocManager.Instance.Resolve<DatabaseConfiguration>().Dialect;
+
         public static IDbConnection NewDbConnection => IocManager.Instance.ResolveNamed<IDbConnection>(Dialect.ToString()
             ,new {ConnectionString });
 
-        public static DataTable RunDataTableSql(string sql, IDbConnection dbConnection = null)
+        public static DataTable RunDataTableSql(string sql, object param = null, IDbConnection dbConnection = null, IDbTransaction tran = null)
         {
-            DataTable table = new DataTable("MyTable");
+            DataTable table = new DataTable("Table1");
             if (dbConnection != null)
             {
-                dbConnection.ExecuteReader(sql);
+                using (var reader = dbConnection.ExecuteReader(sql, param, tran))
+                {
+                    table.Load(reader);
+                }
             }
             else
             {
                 using (var db = NewDbConnection)
                 {
                     db.Open();
-                    using (var reader = db.ExecuteReader(sql))
+                    using (var reader = db.ExecuteReader(sql, param))
                     {
                         table.Load(reader);
                     }
@@ -68,13 +46,30 @@ namespace MiniAbp.DataAccess
             }
             return table;
         }
+        /// <summary>
+        /// 获取数据表并分页
+        /// </summary>
+        /// <param name="sql">查询脚本</param>
+        /// <param name="page">分页对象</param>
+        /// <param name="param">参数</param>
+        /// <param name="dbConnection">Connection</param>
+        /// <param name="tran">Transaction</param>
+        /// <returns></returns>
+        public static PagedDatatable RunDataTableSql(string sql, IPaging page, object param = null,  IDbConnection dbConnection = null, IDbTransaction tran = null)
+        {
 
-        //
-        //        public static DataTable RunDataTableSql(string sql, params SqlParameter[] sqlParas)
-        //        {
-        //            return DBHelper.RunDataTableSQL(sql, sqlParas);
-        //        }
-        public static IEnumerable<T> GetAll<T>(string sql, params SqlParameter[] sqlParas)
+            var query = SimpleDapper.BuilderPageSql(sql, page.OrderByProperty, !page.Ascending, page.CurrentPage, page.PageSize);
+            var table = RunDataTableSql(query, param, dbConnection, tran);
+            var totalCount = Count(sql, param, dbConnection, tran);
+
+            return new PagedDatatable()
+            {
+                Data = table,
+                TotalCount = totalCount
+            };
+        }
+
+        public static IEnumerable<T> GetAll<T>(string sql, object sqlParas)
         {
 
             IEnumerable<T> dy = null;
@@ -115,7 +110,7 @@ namespace MiniAbp.DataAccess
             return count;
         }
 
-        public static int Count(string sql, object param, IDbConnection connection = null,
+        public static int Count(string sql, object param = null, IDbConnection connection = null,
             IDbTransaction transation = null)
         {
             int count;
@@ -189,21 +184,23 @@ namespace MiniAbp.DataAccess
 //        }
 
         //执行删除和更新操作 无需返回值
-        public static void ExecuteNonQuery(string sql,object param, IDbConnection connection = null, IDbTransaction transation = null)
+        public static int ExecuteNonQuery(string sql, object param =null, IDbConnection connection = null, IDbTransaction transation = null)
         {
+            int result;
             if (connection != null)
             {
-                connection.Execute(sql, param, transation);
+                result = connection.Execute(sql, param, transation);
             }
             else
             {
                 using (IDbConnection db = NewDbConnection)
                 {
                     db.Open();
-                    db.Execute(sql, param);
+                    result = db.Execute(sql, param);
                     db.Close();
                 }
             }
+            return result;
         }
         //执行删除和更新操作 无需返回值
         //        public static int ExecuteNonQuery(string sql, params SqlParameter[] para)
@@ -223,6 +220,7 @@ namespace MiniAbp.DataAccess
             {
                 using (IDbConnection db = NewDbConnection)
                 {
+
                     db.Open();
                     dy = db.Get<T>(id);
                     db.Close();
@@ -315,7 +313,8 @@ namespace MiniAbp.DataAccess
                 }
             }
             return result.ToList();
-        } 
+        }
+         
         public static PagedList<T> Query<T>(string sql, IPaging input, object param = null, IDbConnection dbConnection = null, IDbTransaction tran = null)
         {
             PagedList<T> result;

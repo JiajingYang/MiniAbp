@@ -5,8 +5,13 @@ using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Text.RegularExpressions;
 using Dapper;
 using Microsoft.CSharp.RuntimeBinder;
+using MiniAbp.Configuration;
+using MiniAbp.Contract.Permission;
+using MiniAbp.DataAccess.SqlParser;
+using MiniAbp.Dependency;
 using MiniAbp.Domain.Entitys;
 using MiniAbp.Extension;
 
@@ -21,7 +26,7 @@ namespace MiniAbp.DataAccess
         {
             static SimpleDapper()
             {
-                _dialect = DbDapper.Dialect;
+                _dialect = IocManager.Instance.Resolve<DatabaseConfiguration>().Dialect;
                 SetDialect(_dialect);
             }
 
@@ -352,12 +357,22 @@ namespace MiniAbp.DataAccess
                 };
                 return rtnObj;
             }
-
+            /// <summary>
+            /// 分页查询 支持CTE
+            /// </summary>
+            /// <typeparam name="T"></typeparam>
+            /// <param name="connection"></param>
+            /// <param name="sql"></param>
+            /// <param name="page"></param>
+            /// <param name="whereCondition"></param>
+            /// <param name="transaction"></param>
+            /// <param name="commandTimeout"></param>
+            /// <returns></returns>
             public static PagedList<T> Query<T>(this IDbConnection connection, string sql, IPaging page, object whereCondition, IDbTransaction transaction = null, int? commandTimeout = null)
             {
-                var sqlWithPaged = BuilderPageSql(sql, page.OrderByProperty, !page.Ascending, page.CurrentPage, page.PageSize);
+                var convertedSql = BuilderPageSql(sql, page.OrderByProperty, !page.Ascending, page.CurrentPage, page.PageSize);
                 var currenttype = typeof(T);
-                var result = connection.Query<T>(sqlWithPaged, whereCondition, transaction, true, commandTimeout);
+                var result = connection.Query<T>(convertedSql, whereCondition, transaction, true, commandTimeout);
                 var count = connection.Count(sql, whereCondition, transaction, commandTimeout);
                 var rtnObj = new PagedList<T>
                 {
@@ -365,8 +380,18 @@ namespace MiniAbp.DataAccess
                     TotalCount = count
                 };
                 if (Debugger.IsAttached)
-                    Trace.WriteLine(String.Format("PagedList Query<{0}>: {1}", currenttype, sqlWithPaged));
+                    Trace.WriteLine(String.Format("PagedList Query<{0}>: {1}", currenttype, convertedSql));
                 return rtnObj;
+            }
+
+            public static T QueryFirst<T>(this IDbConnection connection, string sql, object whereCondition, IDbTransaction transaction = null, int? commandTimeout = null)
+            {
+                var sqlS = "SELECT TOP 1 * FROM ( {0}) T".Fill(sql);
+                  var currenttype = typeof(T);
+                var result = connection.Query<T>(sqlS, whereCondition, transaction, true, commandTimeout);
+                if (Debugger.IsAttached)
+                    Trace.WriteLine(String.Format("PagedList Query<{0}>: {1}", currenttype, sqlS));
+                return result.FirstOrDefault();
             }
 
             /// <summary>
@@ -686,13 +711,21 @@ namespace MiniAbp.DataAccess
                     Trace.WriteLine(String.Format("Count: {0}", sql));
                 return connection.Query<int>(sql, param, transaction, true, commandTimeout).Single();
             }
-
+            /// <summary>
+            /// 支持CTE
+            /// </summary>
+            /// <param name="connection"></param>
+            /// <param name="sql"></param>
+            /// <param name="whereCondition"></param>
+            /// <param name="transaction"></param>
+            /// <param name="commandTimeout"></param>
+            /// <returns></returns>
             public static int Count(this IDbConnection connection,string sql, object whereCondition , IDbTransaction transaction = null, int? commandTimeout = null)
             {
-                var sqlStr = "SELECT COUNT(1) FROM ( {0} ) temp_count".Fill(sql);
-                return connection.Query<int>(sqlStr, whereCondition, transaction, true, commandTimeout).Single();
+                var sqlMng = new SqlScriptManager(sql);
+                var sqlStr = sqlMng.GetPageCountSql();
+                 return connection.Query<int>(sqlStr, whereCondition, transaction, true, commandTimeout).Single();
             }
-
             public static int Count<T>(this IDbConnection connection, object whereCondition , IDbTransaction transaction = null, int? commandTimeout = null)
             {
                 var currenttype = typeof(T);
@@ -1038,66 +1071,13 @@ namespace MiniAbp.DataAccess
             /// </summary>
             private const string AccessPageTemplate = "select * from (select top ##limit## * from (select top ##offset## {0} order by id desc) order by id) order by {1}";
 
-            private static string BuilderPageSql(string strSql, string order, bool desc, int currentPage, int pageSize)
+            public static string BuilderPageSql(string strSql, string order, bool desc, int currentPage, int pageSize)
             {
-                var pageStart = (currentPage - 1) * pageSize;
-                var pageEnd = pageStart + pageSize;
-                var limit = pageSize;
-                var offset = pageStart;
-
-                string orderBy = order + (desc ? " desc " : " asc ");
-                string pageBody = FetchPageBody(strSql);
-                if (_dialect == Dialect.SqlServer && strSql.IndexOf("row_number()", StringComparison.Ordinal) == -1)
-                {
-                    if (string.IsNullOrEmpty(order))
-                    {
-                        throw new Exception(
-                            " SqlException: order field is null, you must support the order field for sqlserver page. ");
-                    }
-
-                    strSql = string.Format(MssqlPageTemplate, orderBy, strSql);
-                    strSql = strSql.Replace("##startIndex##", pageStart.ToString());
-                    strSql = strSql.Replace("##endIndex##", pageEnd.ToString());
-                }
-                else
-                {
-
-                    if (_dialect == Dialect.Access && strSql.IndexOf("top", StringComparison.Ordinal) == -1)
-                    {
-                        if (string.IsNullOrEmpty(order))
-                        {
-                            throw new Exception(
-                                " SqlException: order field is null, you must support the order field for sqlserver page. ");
-                        }
-                        strSql = string.Format(AccessPageTemplate, pageBody, orderBy);
-                    }
-                    else if (_dialect == Dialect.MySql)
-                    {
-                        if (!string.IsNullOrEmpty(order))
-                        {
-                            strSql = string.Format(MysqlOrderPageTemplate, strSql, orderBy);
-                        }
-                        else
-                        {
-                            strSql = string.Format(MysqlPageTemplate, strSql);
-                        }
-                    }
-                    else if (_dialect == Dialect.SqLite)
-                    {
-                        if (!string.IsNullOrEmpty(order))
-                        {
-                            strSql = string.Format(SqliteOrderPageTemplate, strSql, orderBy);
-                        }
-                        else
-                        {
-                            strSql = string.Format(SqlitePageTemplate, strSql);
-                        }
-                    }
-                    strSql = strSql.Replace("##limit##", limit.ToString());
-                    strSql = strSql.Replace("##offset##", offset.ToString());
-                }
-
-                return strSql;
+                var startCount = (currentPage - 1) * pageSize + 1;
+                var endCount = startCount + pageSize - 1;
+                string orderBy = "ORDER BY " + order + (desc ? " desc " : " asc ");
+                var sqMange = new SqlScriptManager(strSql);
+                return sqMange.GetPageSql(startCount, endCount, orderBy);
             }
 
             private static string FetchPageBody(string sqlStr)
@@ -1113,138 +1093,138 @@ namespace MiniAbp.DataAccess
 
         }
 
-        /// <summary>
-        /// Optional Table attribute.
-        /// You can use the System.ComponentModel.DataAnnotations version in its place to specify the table name of a poco
-        /// </summary>
-        [AttributeUsage(AttributeTargets.Class)]
-        public class TableAttribute : Attribute
-        {
-            /// <summary>
-            /// Optional Table attribute.
-            /// </summary>
-            /// <param name="tableName"></param>
-            public TableAttribute(string tableName)
-            {
-                Name = tableName;
-            }
-            /// <summary>
-            /// Name of the table
-            /// </summary>
-            public string Name { get; private set; }
-            /// <summary>
-            /// Name of the schema
-            /// </summary>
-            public string Schema { get; set; }
-        }
+        ///// <summary>
+        ///// Optional Table attribute.
+        ///// You can use the System.ComponentModel.DataAnnotations version in its place to specify the table name of a poco
+        ///// </summary>
+        //[AttributeUsage(AttributeTargets.Class)]
+        //public class TableAttribute : Attribute
+        //{
+        //    /// <summary>
+        //    /// Optional Table attribute.
+        //    /// </summary>
+        //    /// <param name="tableName"></param>
+        //    public TableAttribute(string tableName)
+        //    {
+        //        Name = tableName;
+        //    }
+        //    /// <summary>
+        //    /// Name of the table
+        //    /// </summary>
+        //    public string Name { get; private set; }
+        //    /// <summary>
+        //    /// Name of the schema
+        //    /// </summary>
+        //    public string Schema { get; set; }
+        //}
 
-        /// <summary>
-        /// Optional Column attribute.
-        /// You can use the System.ComponentModel.DataAnnotations version in its place to specify the table name of a poco
-        /// </summary>
-        [AttributeUsage(AttributeTargets.Property)]
-        public class ColumnAttribute : Attribute
-        {
-            /// <summary>
-            /// Optional Column attribute.
-            /// </summary>
-            /// <param name="columnName"></param>
-            public ColumnAttribute(string columnName)
-            {
-                Name = columnName;
-            }
-            /// <summary>
-            /// Name of the column
-            /// </summary>
-            public string Name { get; private set; }
-        }
+        ///// <summary>
+        ///// Optional Column attribute.
+        ///// You can use the System.ComponentModel.DataAnnotations version in its place to specify the table name of a poco
+        ///// </summary>
+        //[AttributeUsage(AttributeTargets.Property)]
+        //public class ColumnAttribute : Attribute
+        //{
+        //    /// <summary>
+        //    /// Optional Column attribute.
+        //    /// </summary>
+        //    /// <param name="columnName"></param>
+        //    public ColumnAttribute(string columnName)
+        //    {
+        //        Name = columnName;
+        //    }
+        //    /// <summary>
+        //    /// Name of the column
+        //    /// </summary>
+        //    public string Name { get; private set; }
+        //}
 
-        /// <summary>
-        /// Optional Key attribute.
-        /// You can use the System.ComponentModel.DataAnnotations version in its place to specify the Primary Key of a poco
-        /// </summary>
-        [AttributeUsage(AttributeTargets.Property)]
-        public class KeyAttribute : Attribute
-        {
-        }
+        ///// <summary>
+        ///// Optional Key attribute.
+        ///// You can use the System.ComponentModel.DataAnnotations version in its place to specify the Primary Key of a poco
+        ///// </summary>
+        //[AttributeUsage(AttributeTargets.Property)]
+        //public class KeyAttribute : Attribute
+        //{
+        //}
 
-        /// <summary>
-        /// Optional Key attribute.
-        /// You can use the System.ComponentModel.DataAnnotations version in its place to specify a required property of a poco
-        /// </summary>
-        [AttributeUsage(AttributeTargets.Property)]
-        public class RequiredAttribute : Attribute
-        {
-        }
+        ///// <summary>
+        ///// Optional Key attribute.
+        ///// You can use the System.ComponentModel.DataAnnotations version in its place to specify a required property of a poco
+        ///// </summary>
+        //[AttributeUsage(AttributeTargets.Property)]
+        //public class RequiredAttribute : Attribute
+        //{
+        //}
 
-        /// <summary>
-        /// Optional Editable attribute.
-        /// You can use the System.ComponentModel.DataAnnotations version in its place to specify the properties that are editable
-        /// </summary>
-        [AttributeUsage(AttributeTargets.Property)]
-        public class EditableAttribute : Attribute
-        {
-            /// <summary>
-            /// Optional Editable attribute.
-            /// </summary>
-            /// <param name="iseditable"></param>
-            public EditableAttribute(bool iseditable)
-            {
-                AllowEdit = iseditable;
-            }
-            /// <summary>
-            /// Does this property persist to the database?
-            /// </summary>
-            public bool AllowEdit { get; private set; }
-        }
+        ///// <summary>
+        ///// Optional Editable attribute.
+        ///// You can use the System.ComponentModel.DataAnnotations version in its place to specify the properties that are editable
+        ///// </summary>
+        //[AttributeUsage(AttributeTargets.Property)]
+        //public class EditableAttribute : Attribute
+        //{
+        //    /// <summary>
+        //    /// Optional Editable attribute.
+        //    /// </summary>
+        //    /// <param name="iseditable"></param>
+        //    public EditableAttribute(bool iseditable)
+        //    {
+        //        AllowEdit = iseditable;
+        //    }
+        //    /// <summary>
+        //    /// Does this property persist to the database?
+        //    /// </summary>
+        //    public bool AllowEdit { get; private set; }
+        //}
 
-        /// <summary>
-        /// Optional Readonly attribute.
-        /// You can use the System.ComponentModel version in its place to specify the properties that are editable
-        /// </summary>
-        [AttributeUsage(AttributeTargets.Property)]
-        public class ReadOnlyAttribute : Attribute
-        {
-            /// <summary>
-            /// Optional ReadOnly attribute.
-            /// </summary>
-            /// <param name="isReadOnly"></param>
-            public ReadOnlyAttribute(bool isReadOnly)
-            {
-                IsReadOnly = isReadOnly;
-            }
-            /// <summary>
-            /// Does this property persist to the database?
-            /// </summary>
-            public bool IsReadOnly { get; private set; }
-        }
+        ///// <summary>
+        ///// Optional Readonly attribute.
+        ///// You can use the System.ComponentModel version in its place to specify the properties that are editable
+        ///// </summary>
+        //[AttributeUsage(AttributeTargets.Property)]
+        //public class ReadOnlyAttribute : Attribute
+        //{
+        //    /// <summary>
+        //    /// Optional ReadOnly attribute.
+        //    /// </summary>
+        //    /// <param name="isReadOnly"></param>
+        //    public ReadOnlyAttribute(bool isReadOnly)
+        //    {
+        //        IsReadOnly = isReadOnly;
+        //    }
+        //    /// <summary>
+        //    /// Does this property persist to the database?
+        //    /// </summary>
+        //    public bool IsReadOnly { get; private set; }
+        //}
 
-        /// <summary>
-        /// Optional IgnoreSelect attribute.
-        /// Custom for Dapper.SimpleCRUD to exclude a property from Select methods
-        /// </summary>
-        [AttributeUsage(AttributeTargets.Property)]
-        public class IgnoreSelectAttribute : Attribute
-        {
-        }
+        ///// <summary>
+        ///// Optional IgnoreSelect attribute.
+        ///// Custom for Dapper.SimpleCRUD to exclude a property from Select methods
+        ///// </summary>
+        //[AttributeUsage(AttributeTargets.Property)]
+        //public class IgnoreSelectAttribute : Attribute
+        //{
+        //}
 
-        /// <summary>
-        /// Optional IgnoreInsert attribute.
-        /// Custom for Dapper.SimpleCRUD to exclude a property from Insert methods
-        /// </summary>
-        [AttributeUsage(AttributeTargets.Property)]
-        public class IgnoreInsertAttribute : Attribute
-        {
-        }
+        ///// <summary>
+        ///// Optional IgnoreInsert attribute.
+        ///// Custom for Dapper.SimpleCRUD to exclude a property from Insert methods
+        ///// </summary>
+        //[AttributeUsage(AttributeTargets.Property)]
+        //public class IgnoreInsertAttribute : Attribute
+        //{
+        //}
 
-        /// <summary>
-        /// Optional IgnoreUpdate attribute.
-        /// Custom for Dapper.SimpleCRUD to exclude a property from Update methods
-        /// </summary>
-        [AttributeUsage(AttributeTargets.Property)]
-        public class IgnoreUpdateAttribute : Attribute
-        {
-        }
+        ///// <summary>
+        ///// Optional IgnoreUpdate attribute.
+        ///// Custom for Dapper.SimpleCRUD to exclude a property from Update methods
+        ///// </summary>
+        //[AttributeUsage(AttributeTargets.Property)]
+        //public class IgnoreUpdateAttribute : Attribute
+        //{
+        //}
 
 
     }

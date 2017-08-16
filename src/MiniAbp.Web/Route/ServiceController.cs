@@ -1,14 +1,19 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Web;
+using MiniAbp.Authorization;
 using MiniAbp.DataAccess;
+using MiniAbp.Dependency;
 using MiniAbp.Domain.Entitys;
+using MiniAbp.Extension;
 using MiniAbp.Reflection;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Serialization;
+using FileInfo = MiniAbp.Domain.Entitys.FileInfo;
 
 namespace MiniAbp.Web.Route
 {
@@ -26,34 +31,21 @@ namespace MiniAbp.Web.Route
         }
         public static ServiceController Instance => new ServiceController();
 
-        public object Execute(string serviceName, string methodName, object param, RequestType requestType)
+        public object Execute(string serviceName, string methodName, object param)
         {
             serviceName = serviceName.ToUpper();
             methodName = methodName.ToUpper();
-            var type = YAssembly.FindServiceType(serviceName);
-            var method = YAssembly.GetMethodByType(type, methodName);
-            object result = null;
-            using (var dbConnection = DbDapper.NewDbConnection)
+            var svType = YAssembly.FindServiceType(serviceName);
+            if (svType == null)
             {
-                dbConnection.Open();
-                var dbTransaction = dbConnection.BeginTransaction();
-                try
-                {
-                    var instance = YAssembly.CreateInstance(type.FullName);
-                    type.GetProperty("DbConnection").SetValue(instance, dbConnection, null);
-                    type.GetProperty("DbTransaction").SetValue(instance, dbTransaction, null);
-                    InitializeRepositorys(type, instance, dbConnection, dbTransaction);
-                    result = Invoke(method, instance, param);
-                    dbTransaction.Commit();
-                }
-                catch (Exception)
-                {
-                    dbTransaction.Rollback();
-                    throw;
-                }
-
-                dbConnection.Close();
+                throw new UserFriendlyException("'{0}' Service 不存在".Fill(serviceName.ToLower()));
             }
+            var interfaceType = YAssembly.ServiceDic[svType];
+            var method = YAssembly.GetMethodByType(interfaceType, methodName);
+            object result = null; 
+            var instance = IocManager.Instance.Resolve(interfaceType); 
+            result = Invoke(method, instance, param);
+             
             return result;
         }
 
@@ -74,17 +66,28 @@ namespace MiniAbp.Web.Route
 
         public object GetMethoParam(MethodInfo info, object param)
         {
-
             if (param is string)
             {
-                return GetStringObject(info, param.ToString());
+                object paraObject = null;
+                try
+                {
+                    paraObject = GetStringObject(info, param.ToString());
+                }
+                catch (Exception ex)
+                {
+                    var friendlyEx = new UserFriendlyException("{0} 方法的请求参数出错".Fill(info.ToString()));
+                    friendlyEx.InnerException = ex;
+                    throw friendlyEx;
+                }
+                return paraObject;
             }
-            else if (param is List<HttpPostedFile>)
+            else if (param is FileInput)
             {
                 return GetFileObject(info, param);
             }           
             throw new UserFriendlyException("请求的参数类型错误， 目前只支持文件和数据类型");
         }
+
 
         private object GetStringObject(MethodInfo info, string param)
         {
@@ -121,9 +124,7 @@ namespace MiniAbp.Web.Route
             var instance = YAssemblyCollection.CreateInstance(type.FullName);
             if (instance is FileInput)
             {
-                var fileInput = instance as FileInput;
-                fileInput.Files = param as List<MabpFiles>;
-                return fileInput;
+                return param;
             }
             else
             {
@@ -144,8 +145,8 @@ namespace MiniAbp.Web.Route
                     var fieldInfo = ((PropertyInfo) memberInfo);
                     var typeofMember = YAssembly.GetType(fieldInfo.PropertyType.FullName);
                     var instanceOfMember = YAssembly.CreateInstance(fieldInfo.PropertyType.FullName);
-                    typeofMember.GetProperty("DbConnection").SetValue(instanceOfMember, dbConnection, null);
-                    typeofMember.GetProperty("DbTransaction").SetValue(instanceOfMember, dbTransaction, null);
+                    typeofMember.GetProperty("Connection").SetValue(instanceOfMember, dbConnection, null);
+                    typeofMember.GetProperty("Transaction").SetValue(instanceOfMember, dbTransaction, null);
                     type.GetProperty(memberInfo.Name).SetValue(instance, instanceOfMember, null);
                 }
             }

@@ -1,16 +1,23 @@
 ﻿using System;
-using System.ComponentModel.DataAnnotations; 
+using System.ComponentModel.DataAnnotations;
+using MiniAbp.Dependency;
+using MiniAbp.Runtime;
 
 namespace MiniAbp.Domain
 {
-    public class CreationEntity : Entity
+    public abstract class CreationAndDeletionEntity : CreationEntity
     {
-        public DateTime? CreationTime { get; set; }
+        public virtual DateTime? DeletionTime { get; set; }
+        [StringLength(50)]
+        public virtual string DeleterUserId { get; set; }
+        public virtual bool IsDeleted { get; set; }
 
-        public new void RefreshId()
+        public virtual void MarkDeleted()
         {
-            this.Id = Guid.NewGuid().ToString();
-            this.CreationTime = DateTime.Now;
+            this.IsDeleted = true;
+            this.DeletionTime = DateTime.Now;
+            var session = IocManager.Instance.Resolve<ISession>();
+            this.DeleterUserId = session.UserId;
         }
     }
 }
